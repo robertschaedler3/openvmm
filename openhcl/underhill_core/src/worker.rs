@@ -202,6 +202,48 @@ const MAX_SUBCHANNELS_PER_VNIC: u16 = 32;
 const AZIHSM_VPCI_VENDOR_ID: u16 = 0x1414;
 const AZIHSM_VPCI_DEVICE_ID: u16 = 0xC003;
 
+// NVIDIA PCI vendor ID. Used by every NVIDIA-vendored GPU SKU.
+const NVIDIA_VPCI_VENDOR_ID: u16 = 0x10DE;
+
+/// A GPU SKU entry in the VPCI relay's allowlist when GPU mode is on.
+///
+/// Each entry expands into one `AllowedDevice` registered with the VPCI
+/// relay and one `GpuSku` surfaced in the attestation runtime claims, so
+/// the allowlist and the attested SKU list stay in sync from a single
+/// source of truth.
+///
+/// Adding a new SKU here changes the compiled paravisor binary and
+/// therefore changes the launch measurement (MRD/MRTD). Relying-party
+/// policies that pin to a measurement or to `allowed-gpu-skus` content
+/// need to be updated when this table changes.
+struct GpuSkuEntry {
+    vendor_id: u16,
+    device_id: u16,
+    label: &'static str,
+}
+
+/// GPU SKUs admitted when `OPENHCL_ALLOW_GPU_DEVICES=1` is set.
+///
+/// Each entry is validated against the PCI ID database
+/// (<https://pci-ids.ucw.cz>).
+const ALLOWED_GPU_SKUS: &[GpuSkuEntry] = &[
+    GpuSkuEntry {
+        vendor_id: NVIDIA_VPCI_VENDOR_ID,
+        device_id: 0x2331,
+        label: "NVIDIA H100 PCIe",
+    },
+    GpuSkuEntry {
+        vendor_id: NVIDIA_VPCI_VENDOR_ID,
+        device_id: 0x2330,
+        label: "NVIDIA H100 SXM",
+    },
+    GpuSkuEntry {
+        vendor_id: NVIDIA_VPCI_VENDOR_ID,
+        device_id: 0x2321,
+        label: "NVIDIA H100 NVL",
+    },
+];
+
 struct GuestEmulationTransportInfra {
     get_thread: JoinHandle<()>,
     get_spawner: DefaultDriver,
@@ -315,6 +357,13 @@ pub struct UnderhillEnvCfg {
     pub attempt_ak_cert_callback: Option<bool>,
     /// Enable the VPCI relay
     pub enable_vpci_relay: Option<bool>,
+    /// Allow GPU SKUs through the VPCI relay filter.
+    ///
+    /// `None` means "default to off"; `Some(true)`/`Some(false)` is an
+    /// explicit per-process override set via `OPENHCL_ALLOW_GPU_DEVICES`.
+    /// A future change will let the host opt in per-VM via DPS once the
+    /// corresponding host-side schema lands.
+    pub allow_gpu_devices: Option<bool>,
     /// Disable proxy interrupt redirection
     pub disable_proxy_redirect: bool,
     /// Disable lower VTL timer virtualization
@@ -1709,6 +1758,20 @@ async fn new_underhill_vm(
 
     if enable_vpci_relay && !with_vmbus_relay {
         anyhow::bail!("cannot run the VPCI relay without the VMBus relay");
+    }
+
+    // GPU mode is opt-in via `OPENHCL_ALLOW_GPU_DEVICES`. Defaults to off so
+    // current production behavior is preserved. GPU passthrough requires the
+    // VPCI relay to be on - we bail rather than silently ignoring the toggle
+    // so that a misconfiguration is loud.
+    //
+    // A future change will let the host opt in per-VM via DPS, once the
+    // corresponding host-side schema lands. The env var is the only
+    // production-reachable opt-in mechanism today.
+    let allow_gpu_devices = env_cfg.allow_gpu_devices.unwrap_or(false);
+
+    if allow_gpu_devices && !enable_vpci_relay {
+        anyhow::bail!("cannot allow GPU devices without enabling the VPCI relay");
     }
 
     // Construct chipset MMIO ranges from the positional convention in the
@@ -3324,6 +3387,32 @@ async fn new_underhill_vm(
                     sub_vendor_id: None,
                     sub_system_id: None,
                 });
+
+                // Allow GPU SKUs (3D display controllers) when GPU mode is
+                // enabled. Each SKU comes from the same `ALLOWED_GPU_SKUS`
+                // table that is surfaced via attestation runtime claims, so
+                // the runtime allowlist and the attested SKU list cannot
+                // drift apart.
+                //
+                // Per-SKU entries (rather than a broader class+subclass
+                // filter) mean each new GPU generation requires a paravisor
+                // build + sign + ship cycle. That deliberate review gate is
+                // worth more than the convenience of admitting every
+                // 3D-controller class device.
+                if allow_gpu_devices {
+                    for sku in ALLOWED_GPU_SKUS {
+                        relay.add_allowed_device(AllowedDevice {
+                            vendor_id: Some(sku.vendor_id),
+                            device_id: Some(sku.device_id),
+                            revision_id: None,
+                            prog_if: Some(ProgrammingInterface::NONE),
+                            sub_class: Some(Subclass::DISPLAY_CONTROLLER_3D),
+                            base_class: Some(ClassCode::DISPLAY_CONTROLLER),
+                            sub_vendor_id: None,
+                            sub_system_id: None,
+                        });
+                    }
+                }
 
                 vpci_relay = Some(relay);
             }

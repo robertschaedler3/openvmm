@@ -101,6 +101,7 @@ pub struct VpciRelay {
 struct RelayedDevice {
     bus_instance_id: Guid,
     bus_client: VpciClient,
+    hw_ids: HardwareIds,
     #[inspect(skip)]
     removed: VpciDeviceEject,
     #[inspect(skip)]
@@ -204,6 +205,20 @@ impl VpciRelay {
         self.allowed_devices.push(dev);
     }
 
+    /// Returns the (instance ID, hardware IDs) of every device that the
+    /// relay has currently admitted and exposed to the guest.
+    ///
+    /// Useful for surfacing the live device list to attestation runtime
+    /// claims, inspect, or other diagnostics. The returned set reflects
+    /// the relay's state at the moment of the call; devices may arrive or
+    /// be removed asynchronously.
+    pub fn admitted_devices(&self) -> impl Iterator<Item = (Guid, HardwareIds)> + '_ {
+        self.devices
+            .iter()
+            .filter(|(_, d)| !d.ready_to_remove)
+            .map(|(_, d)| (d.bus_instance_id, d.hw_ids))
+    }
+
     /// Wait for the relay to be ready. This might never return. This call is cancellable.
     pub async fn wait_ready(&mut self) {
         poll_fn(|cx| {
@@ -288,10 +303,10 @@ impl VpciRelay {
             return Ok(());
         };
 
-        let hw_ids = vpci_device.hw_ids();
+        let hw_ids = *vpci_device.hw_ids();
 
         if !self.allowed_devices.is_empty()
-            && !self.allowed_devices.iter().any(|d| d.allows(hw_ids))
+            && !self.allowed_devices.iter().any(|d| d.allows(&hw_ids))
         {
             let prog_if = hw_ids.prog_if;
             let sub_class = hw_ids.sub_class;
@@ -359,6 +374,7 @@ impl VpciRelay {
         entry.insert(RelayedDevice {
             bus_instance_id: instance_id,
             bus_client: vpci_client,
+            hw_ids,
             removed,
             bus_unit,
             device_unit,
@@ -441,5 +457,136 @@ impl SaveRestore for RelayedVpciDevice {
 
     fn restore(&mut self, state: Self::SavedState) -> Result<(), RestoreError> {
         match state {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AllowedDevice;
+    use pci_core::spec::hwid::ClassCode;
+    use pci_core::spec::hwid::HardwareIds;
+    use pci_core::spec::hwid::ProgrammingInterface;
+    use pci_core::spec::hwid::Subclass;
+
+    /// Hardware IDs for a typical compute / confidential GPU (NVIDIA H100
+    /// shape: class 0x03, subclass 0x02).
+    fn gpu_3d() -> HardwareIds {
+        HardwareIds {
+            vendor_id: 0x10DE,
+            device_id: 0x2331,
+            revision_id: 0,
+            prog_if: ProgrammingInterface::NONE,
+            sub_class: Subclass::DISPLAY_CONTROLLER_3D,
+            base_class: ClassCode::DISPLAY_CONTROLLER,
+            type0_sub_vendor_id: 0,
+            type0_sub_system_id: 0,
+        }
+    }
+
+    /// Hardware IDs for a legacy VGA display controller (class 0x03,
+    /// subclass 0x00) — the same base class as a GPU but a different
+    /// subclass.
+    fn vga_display() -> HardwareIds {
+        HardwareIds {
+            sub_class: Subclass(0x00),
+            ..gpu_3d()
+        }
+    }
+
+    /// Hardware IDs for an NVMe controller (class 0x01) — must not match
+    /// the GPU filter.
+    fn nvme() -> HardwareIds {
+        HardwareIds {
+            vendor_id: 0x1234,
+            device_id: 0x5678,
+            revision_id: 0,
+            prog_if: ProgrammingInterface::MASS_STORAGE_CONTROLLER_NON_VOLATILE_MEMORY_NVME,
+            sub_class: Subclass::MASS_STORAGE_CONTROLLER_NON_VOLATILE_MEMORY,
+            base_class: ClassCode::MASS_STORAGE_CONTROLLER,
+            type0_sub_vendor_id: 0,
+            type0_sub_system_id: 0,
+        }
+    }
+
+    /// The same (class, subclass) filter used by the OpenHCL worker to
+    /// admit GPUs.
+    fn gpu_filter() -> AllowedDevice {
+        AllowedDevice {
+            vendor_id: None,
+            device_id: None,
+            revision_id: None,
+            prog_if: None,
+            sub_class: Some(Subclass::DISPLAY_CONTROLLER_3D),
+            base_class: Some(ClassCode::DISPLAY_CONTROLLER),
+            sub_vendor_id: None,
+            sub_system_id: None,
+        }
+    }
+
+    #[test]
+    fn wildcard_matches_any_device() {
+        let wildcard = AllowedDevice {
+            vendor_id: None,
+            device_id: None,
+            revision_id: None,
+            prog_if: None,
+            sub_class: None,
+            base_class: None,
+            sub_vendor_id: None,
+            sub_system_id: None,
+        };
+        assert!(wildcard.allows(&gpu_3d()));
+        assert!(wildcard.allows(&vga_display()));
+        assert!(wildcard.allows(&nvme()));
+    }
+
+    #[test]
+    fn gpu_filter_admits_3d_controller() {
+        assert!(gpu_filter().allows(&gpu_3d()));
+    }
+
+    #[test]
+    fn gpu_filter_rejects_vga_subclass() {
+        // Same base class, different subclass — must not be admitted by the
+        // tightened (class, subclass) filter.
+        assert!(!gpu_filter().allows(&vga_display()));
+    }
+
+    #[test]
+    fn gpu_filter_rejects_non_display_device() {
+        assert!(!gpu_filter().allows(&nvme()));
+    }
+
+    #[test]
+    fn gpu_filter_ignores_vendor_and_device_id() {
+        // The GPU filter is vendor-agnostic, so any vendor/device ID that
+        // presents as a 3D display controller must be admitted.
+        let amd_gpu = HardwareIds {
+            vendor_id: 0x1002,
+            device_id: 0x740F,
+            ..gpu_3d()
+        };
+        assert!(gpu_filter().allows(&amd_gpu));
+    }
+
+    #[test]
+    fn exact_match_filter_requires_all_specified_fields() {
+        let exact = AllowedDevice {
+            vendor_id: Some(0x10DE),
+            device_id: Some(0x2331),
+            revision_id: None,
+            prog_if: None,
+            sub_class: None,
+            base_class: None,
+            sub_vendor_id: None,
+            sub_system_id: None,
+        };
+        assert!(exact.allows(&gpu_3d()));
+        // Wrong device ID — must reject.
+        let other = HardwareIds {
+            device_id: 0x9999,
+            ..gpu_3d()
+        };
+        assert!(!exact.allows(&other));
     }
 }

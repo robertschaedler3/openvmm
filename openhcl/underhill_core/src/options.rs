@@ -299,6 +299,12 @@ pub struct Options {
     /// (OPENHCL_ENABLE_VPCI_RELAY=1) Enable the VPCI relay.
     pub enable_vpci_relay: Option<bool>,
 
+    /// (OPENHCL_ALLOW_GPU_DEVICES=1) Allow GPU SKUs to be admitted by the
+    /// VPCI relay filter. Has no effect unless the VPCI relay is also
+    /// enabled. Defaults to the value supplied by the host via DPS
+    /// (`gpu_devices_allowed`), which itself defaults to `false`.
+    pub allow_gpu_devices: Option<bool>,
+
     /// (OPENHCL_DISABLE_PROXY_REDIRECT=1) Disable proxy interrupt redirection.
     pub disable_proxy_redirect: bool,
 
@@ -494,6 +500,7 @@ impl Options {
         let strict_encryption_policy = parse_env_bool_opt("HCL_STRICT_ENCRYPTION_POLICY");
         let attempt_ak_cert_callback = parse_env_bool_opt("HCL_ATTEMPT_AK_CERT_CALLBACK");
         let enable_vpci_relay = parse_env_bool_opt("OPENHCL_ENABLE_VPCI_RELAY");
+        let allow_gpu_devices = parse_env_bool_opt("OPENHCL_ALLOW_GPU_DEVICES");
         let disable_proxy_redirect = parse_env_bool("OPENHCL_DISABLE_PROXY_REDIRECT");
         let disable_lower_vtl_timer_virt = parse_env_bool("OPENHCL_DISABLE_LOWER_VTL_TIMER_VIRT");
         let config_timeout_in_seconds =
@@ -563,6 +570,7 @@ impl Options {
             strict_encryption_policy,
             attempt_ak_cert_callback,
             enable_vpci_relay,
+            allow_gpu_devices,
             disable_proxy_redirect,
             disable_lower_vtl_timer_virt,
             config_timeout_in_seconds,
