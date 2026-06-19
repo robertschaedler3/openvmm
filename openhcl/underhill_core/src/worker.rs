@@ -3325,6 +3325,22 @@ async fn new_underhill_vm(
                     sub_system_id: None,
                 });
 
+                // DEV ONLY: allow any GPU (PCI display controller, class 0x03)
+                // to be relayed to the guest. This is the minimal change to
+                // mount a confidential GPU on a local dev build of OpenHCL.
+                // Not for production - it admits any display-controller-class
+                // device the host offers, with no vendor/SKU restriction.
+                relay.add_allowed_device(AllowedDevice {
+                    vendor_id: None,
+                    device_id: None,
+                    revision_id: None,
+                    prog_if: None,
+                    sub_class: None,
+                    base_class: Some(ClassCode::DISPLAY_CONTROLLER),
+                    sub_vendor_id: None,
+                    sub_system_id: None,
+                });
+
                 vpci_relay = Some(relay);
             }
 
