@@ -4374,6 +4374,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "measured_policy"
+version = "0.0.0"
+dependencies = [
+ "sha2",
+ "thiserror 2.0.16",
+]
+
+[[package]]
 name = "mem_profile_tracing"
 version = "0.0.0"
 dependencies = [
@@ -10739,14 +10747,18 @@ dependencies = [
  "hcl",
  "hvdef",
  "inspect",
+ "measured_policy",
  "memory_range",
  "mesh",
  "openhcl_tdisp",
  "pci_core",
+ "serde",
+ "serde_json",
  "slab",
  "sparse_mmap",
  "state_unit",
  "tdisp",
+ "thiserror 2.0.16",
  "tracelimit",
  "tracing",
  "user_driver",

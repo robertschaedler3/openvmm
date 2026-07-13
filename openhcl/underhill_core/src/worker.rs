@@ -3434,6 +3434,34 @@ async fn new_underhill_vm(
                     });
                 }
 
+                // Install an optional host-supplied device-admission policy
+                // (Azure Local CGPU). The policy extends the static allow list
+                // above; it is validated against the relay's capability ceiling
+                // here and admits nothing if malformed. Binding the policy to
+                // attestation is handled separately (see SPEC.md).
+                if let Some(policy_bytes) = dps
+                    .general
+                    .vtl2_settings
+                    .as_ref()
+                    .and_then(|s| s.device_policy.as_deref())
+                {
+                    match device_policy::load_from_bytes(policy_bytes) {
+                        Ok(policy) => {
+                            tracing::info!(
+                                rule_count = policy.rules.len(),
+                                "installing vpci device policy"
+                            );
+                            relay.set_device_policy(policy);
+                        }
+                        Err(err) => {
+                            tracing::warn!(
+                                error = &err as &dyn std::error::Error,
+                                "ignoring invalid vpci device policy"
+                            );
+                        }
+                    }
+                }
+
                 vpci_relay = Some(relay);
             }
 

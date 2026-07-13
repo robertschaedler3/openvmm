@@ -137,6 +137,7 @@ kmsg = { path = "support/kmsg" }
 kmsg_writer = { path = "support/kmsg_writer" }
 loan_cell = { path = "support/loan_cell" }
 local_clock = { path = "support/local_clock" }
+measured_policy = { path = "support/measured_policy" }
 mesh = { path = "support/mesh" }
 mesh_build = { path = "support/mesh/mesh_build" }
 mesh_channel = { path = "support/mesh/mesh_channel" }

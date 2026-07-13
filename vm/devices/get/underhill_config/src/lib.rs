@@ -204,6 +204,12 @@ pub struct Vtl2Settings {
     pub fixed: Vtl2SettingsFixed,
     /// Dynamic settings
     pub dynamic: Vtl2SettingsDynamic,
+    /// Raw device-admission policy blob supplied via the `DevicePolicy`
+    /// namespace, consumed by the VPCI relay. `None` when no policy is
+    /// supplied. The bytes are opaque here; the relay parses and validates
+    /// them against its capability ceiling.
+    #[inspect(skip)]
+    pub device_policy: Option<Vec<u8>>,
 }
 
 enum Component {

@@ -9,11 +9,13 @@
 //! consumes VPCI buses from the host and relays them to the guest, filtering
 //! them as needed.
 
+pub mod device_policy;
 #[cfg(target_os = "linux")]
 pub mod linux_mmio;
 
 // Exported to make it easier to define filters without explicitly pulling in
 // `pci_core`.
+pub use device_policy::DevicePolicy;
 pub use pci_core::spec::hwid::ClassCode;
 pub use pci_core::spec::hwid::ProgrammingInterface;
 pub use pci_core::spec::hwid::Subclass;
@@ -94,6 +96,12 @@ pub struct VpciRelay {
     mmio_access: Box<dyn CreateMemoryAccess>,
     #[inspect(iter_by_index)]
     allowed_devices: Vec<AllowedDevice>,
+    /// Optional authenticated device-admission policy. When set, it provides an
+    /// additional admission path alongside `allowed_devices`. When `None` (the
+    /// default, and the only state in mainline non-CGPU builds) the relay
+    /// behaves exactly as it did before policy support existed.
+    #[inspect(skip)]
+    device_policy: Option<DevicePolicy>,
     #[inspect(hex)]
     vtom: Option<u64>,
     options: VpciRelayOptions,
@@ -193,6 +201,7 @@ impl VpciRelay {
             mmio_range,
             mmio_access,
             allowed_devices: Vec::new(),
+            device_policy: None,
             vtom,
             options,
         }
@@ -204,6 +213,22 @@ impl VpciRelay {
     /// Note that if no devices are on the list, then all devices are allowed.
     pub fn add_allowed_device(&mut self, dev: AllowedDevice) {
         self.allowed_devices.push(dev);
+    }
+
+    /// Installs an authenticated device-admission policy.
+    ///
+    /// The policy provides an *additional*, deny-by-default admission path
+    /// evaluated alongside the statically-configured allow list: a device is
+    /// relayed if the static list allows it (legacy behavior) **or** the policy
+    /// admits it. Installing a policy therefore never removes an admission the
+    /// static list already granted, and — because the relay only consults a
+    /// policy that has been installed — builds that never install one are
+    /// completely unaffected.
+    ///
+    /// The policy must already have been authenticated and validated against the
+    /// capability ceiling (see [`measured_policy::load`]).
+    pub fn set_device_policy(&mut self, policy: DevicePolicy) {
+        self.device_policy = Some(policy);
     }
 
     /// Wait for the relay to be ready. This might never return. This call is cancellable.
@@ -292,9 +317,19 @@ impl VpciRelay {
 
         let hw_ids = vpci_device.hw_ids();
 
-        if !self.allowed_devices.is_empty()
-            && !self.allowed_devices.iter().any(|d| d.allows(hw_ids))
-        {
+        // A device is relayed if the statically-configured allow list permits it
+        // (legacy behavior: an empty list permits everything) OR an installed
+        // policy admits it (deny-by-default). When no policy is installed — the
+        // only state for mainline non-CGPU builds — this reduces exactly to the
+        // original allow-list check.
+        let allowed_by_list = self.allowed_devices.is_empty()
+            || self.allowed_devices.iter().any(|d| d.allows(hw_ids));
+        let allowed_by_policy = self
+            .device_policy
+            .as_ref()
+            .is_some_and(|p| p.admits(hw_ids));
+
+        if !allowed_by_list && !allowed_by_policy {
             let prog_if = hw_ids.prog_if;
             let sub_class = hw_ids.sub_class;
             let base_class = hw_ids.base_class;
